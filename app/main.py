@@ -1,48 +1,28 @@
-from fastapi.middleware.cors import CORSMiddleware
-import requests
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from jose import jwt, JWTError
+
+import secrets
+from datetime import datetime, timedelta, timezone
+
+from app.schemas import (
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+)
+
 from app.database import engine, get_db
-
-app = FastAPI()
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-from app.models import (
-    Base,
-    User,
-    ChatHistory,
-    ChatSession
-)
-
-Base.metadata.create_all(bind=engine)
-
+from app.models import Base, User
 from app.schemas import (
     UserCreate,
     UserResponse,
-    UserLogin,
     UserUpdate,
     ChangePassword,
-    AIRequest,
-    AIResponse,
-    ChatHistoryResponse,
-    SessionCreate,
-    SessionResponse,
     Token,
-    RefreshTokenRequest
+    RefreshTokenRequest,
 )
-
 from app.auth import (
     hash_password,
     verify_password,
@@ -51,127 +31,33 @@ from app.auth import (
     get_current_user,
     require_admin,
     SECRET_KEY,
-    ALGORITHM
+    ALGORITHM,
 )
 
+app = FastAPI(title="Authentication API")
+
+# Allow requests from the React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create tables defined in models.py if they do not exist
+Base.metadata.create_all(bind=engine)
 
 @app.get("/")
 def root():
     return {"message": "Authentication API Running"}
 
-@app.get("/profile")
-def profile(
-    current_user: User = Depends(get_current_user)
-):
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "email": current_user.email
-    }
-
-@app.put("/profile", response_model=UserResponse)
-def update_profile(
-    user_data: UserUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    current_user.username = user_data.username
-    current_user.email = user_data.email
-
-    db.commit()
-    db.refresh(current_user)
-
-    return current_user
-
-@app.put("/change-password")
-def change_password(
-    password_data: ChangePassword,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    if not verify_password(
-        password_data.old_password,
-        current_user.hashed_password
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Old password is incorrect"
-        )
-
-    current_user.hashed_password = hash_password(
-        password_data.new_password
-    )
-
-    db.commit()
-
-    return {
-        "message": "Password updated successfully"
-    }
-
-@app.get("/admin")
-def admin_dashboard(
-    current_user: User = Depends(require_admin)
-):
-    return {
-        "message": "Welcome Admin",
-        "user": current_user.username
-    }
-
-@app.get(
-    "/chat-history",
-    response_model=list[ChatHistoryResponse]
-)
-def get_chat_history(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    chats = (
-    db.query(ChatHistory)
-    .filter(
-        ChatHistory.user_id == current_user.id
-    )
-    .order_by(
-        ChatHistory.created_at.desc()
-    )
-    .limit(20)
-    .all()
-    )
-
-    return chats
-
-@app.get(
-    "/sessions",
-    response_model=list[SessionResponse]
-)
-def get_sessions(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    sessions = (
-        db.query(ChatSession)
-        .filter(
-            ChatSession.user_id == current_user.id
-        )
-        .order_by(
-            ChatSession.created_at.desc()
-        )
-        .all()
-    )
-
-    return sessions
-
-
+# Register a new user
 @app.post("/register", response_model=UserResponse)
 def register(
     user: UserCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-
-    # Check if email already exists
     existing_user = (
         db.query(User)
         .filter(User.email == user.email)
@@ -181,48 +67,49 @@ def register(
     if existing_user:
         raise HTTPException(
             status_code=400,
-            detail="Email already registered"
+            detail="Email already registered",
         )
 
-    # Create new user
     db_user = User(
         username=user.username,
         email=user.email,
-        hashed_password=hash_password(user.password)
+        hashed_password=hash_password(user.password),
     )
 
     db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+
+    try:
+        db.commit()
+        db.refresh(db_user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered",
+        )
 
     return db_user
 
-
+# Login with email and password
 @app.post("/login", response_model=Token)
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-
     db_user = (
         db.query(User)
         .filter(User.email == form_data.username)
         .first()
     )
 
-    if not db_user:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password"
-        )
-
-    if not verify_password(
+    if not db_user or not verify_password(
         form_data.password,
-        db_user.hashed_password
+        db_user.hashed_password,
     ):
         raise HTTPException(
             status_code=401,
-            detail="Invalid email or password"
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     access_token = create_access_token(
@@ -236,35 +123,123 @@ def login(
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
 
-@app.post("/refresh")
-def refresh_token(
-    token_data: RefreshTokenRequest
+# Get the logged-in user's profile
+@app.get("/profile", response_model=UserResponse)
+def profile(
+    current_user: User = Depends(get_current_user),
 ):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "role": current_user.role,
+    }
+
+# Update the logged-in user's profile
+@app.put("/profile", response_model=UserResponse)
+def update_profile(
+    user_data: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    current_user.username = user_data.username
+    current_user.email = user_data.email
 
     try:
+        db.commit()
+        db.refresh(current_user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Email is already registered",
+        )
 
+    return current_user
+
+@app.delete("/profile")
+def delete_profile(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db.delete(current_user)
+    db.commit()
+
+    return {"message": "Account deleted successfully"}
+
+# Change the logged-in user's password
+
+@app.put("/change-password")
+def change_password(
+    password_data: ChangePassword,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Check whether the old password is correct
+    if not verify_password(
+        password_data.old_password,
+        current_user.hashed_password,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Old password is incorrect",
+        )
+
+    # Prevent reusing the same password
+    if verify_password(
+        password_data.new_password,
+        current_user.hashed_password,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be different from the old password",
+        )
+
+    # Hash the new password before saving it
+    current_user.hashed_password = hash_password(
+        password_data.new_password
+    )
+
+    db.commit()
+
+    return {
+        "message": "Password updated successfully"
+    }
+
+# Generate a new access token using a refresh token
+@app.post("/refresh")
+def refresh_token(
+    token_data: RefreshTokenRequest,
+):
+    try:
         payload = jwt.decode(
             token_data.refresh_token,
             SECRET_KEY,
-            algorithms=[ALGORITHM]
+            algorithms=[ALGORITHM],
         )
+
+        # Ensure this is a refresh token, not an access token
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid refresh token",
+            )
 
         email = payload.get("sub")
 
-        if email is None:
+        if not email:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid refresh token"
+                detail="Invalid refresh token",
             )
 
     except JWTError:
-
         raise HTTPException(
             status_code=401,
-            detail="Invalid refresh token"
+            detail="Invalid refresh token",
         )
 
     new_access_token = create_access_token(
@@ -273,177 +248,205 @@ def refresh_token(
 
     return {
         "access_token": new_access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
 
-@app.post("/ask-ai", response_model=AIResponse)
-def ask_ai(
-    request: AIRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+# Admin-only route
+@app.get("/admin")
+def admin_dashboard(
+    current_user: User = Depends(require_admin),
 ):
-    previous_chats = (
-    db.query(ChatHistory)
-    .filter(
-        ChatHistory.session_id == request.session_id
-    )
-    .order_by(
-        ChatHistory.created_at.asc()
-    )
-    .all()
-)
+    return {
+        "message": "Welcome Admin",
+        "user": current_user.username,
+    }
 
-    conversation = """
-    You are an expert software interview coach.
+@app.get("/admin/users")
+def get_all_users(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    users = db.query(User).order_by(User.id.asc()).all()
 
-    Your job is to:
-    - Help users prepare for technical interviews
-    - Explain concepts clearly
-    - Ask interview questions when requested
-    - Give concise answers
-    - Focus on Python, FastAPI, SQL, JWT, React and backend development
-
-    """
-
-    for chat in previous_chats:
-        conversation += f"User: {chat.question}\n"
-        conversation += f"Assistant: {chat.answer}\n\n"
-
-    conversation += f"User: {request.question}\n"
-    conversation += "Assistant:"
-
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "llama3",
-            "prompt": conversation,
-            "stream": False
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
         }
-    )
+        for user in users
+    ]
 
-    data = response.json()
-
-    ai_answer = data["response"]
-
-    chat = ChatHistory(
-    user_id=current_user.id,
-    session_id=request.session_id,
-    question=request.question,
-    answer=ai_answer
-    )
-
-    db.add(chat)
-    db.commit()
+@app.get("/admin/summary")
+def admin_summary(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    total_users = db.query(User).count()
+    admin_count = db.query(User).filter(User.role == "admin").count()
 
     return {
-        "answer": ai_answer
+        "total_users": total_users,
+        "admin_count": admin_count,
+        "regular_users": total_users - admin_count,
     }
 
-@app.delete("/chat-history/{chat_id}")
-def delete_chat(
-    chat_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+# Request a password-reset token
+@app.post("/forgot-password")
+def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
 ):
-
-    chat = (
-        db.query(ChatHistory)
-        .filter(
-            ChatHistory.id == chat_id
-        )
+    user = (
+        db.query(User)
+        .filter(User.email == request.email)
         .first()
     )
 
-    if not chat:
-        raise HTTPException(
-            status_code=404,
-            detail="Chat not found"
-        )
-
-    if chat.user_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Not allowed to delete this chat"
-        )
-
-    db.delete(chat)
-    db.commit()
-
-    return {
-        "message": "Chat deleted successfully"
+    # Do not reveal whether an email is registered.
+    response = {
+        "message": "If the account exists, password-reset instructions will be provided."
     }
 
-@app.get("/chat-history/{session_id}")
-def get_session_history(
-    session_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+    if not user:
+        return response
 
-    chats = (
-        db.query(ChatHistory)
-        .filter(
-            ChatHistory.user_id == current_user.id,
-            ChatHistory.session_id == session_id
-        )
-        .order_by(ChatHistory.created_at.asc())
-        .all()
+    # Generate a secure, random, single-use token.
+    token = secrets.token_urlsafe(32)
+
+    user.reset_token = token
+    user.reset_token_expiry = (
+        datetime.now(timezone.utc) + timedelta(minutes=15)
     )
 
-    return chats
-
-@app.post(
-    "/sessions",
-    response_model=SessionResponse
-)
-def create_session(
-    session_data: SessionCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    session = ChatSession(
-        user_id=current_user.id,
-        title=session_data.title
-    )
-
-    db.add(session)
     db.commit()
-    db.refresh(session)
 
-    return session
+    # Development only: return the token for local testing.
+    # Replace this with email delivery before production.
+    return {
+        **response,
+        "reset_token": token,
+    }
 
-@app.post("/start-interview")
-def start_interview(
-    topic: str
+
+# Reset the password using the token
+@app.post("/reset-password")
+def reset_password(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db),
 ):
-    prompt = f"""
-    You are an experienced technical interviewer.
-
-    Start a {topic} interview.
-
-    Rules:
-    1. Ask exactly ONE interview question.
-    2. Keep it beginner-friendly.
-    3. Do NOT ask coding challenges.
-    4. Do NOT provide answers.
-    5. Return only the question.
-
-    Example:
-    What is the difference between a list and a tuple in Python?
-    """
-
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "llama3",
-            "prompt": prompt,
-            "stream": False
-        }
+    user = (
+        db.query(User)
+        .filter(User.reset_token == request.token)
+        .first()
     )
 
-    data = response.json()
+    if not user or not user.reset_token_expiry:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token",
+        )
+
+    expiry = user.reset_token_expiry
+
+    # PostgreSQL may return a timezone-aware datetime.
+    # Handle a naive datetime defensively as UTC.
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+
+    if datetime.now(timezone.utc) >= expiry:
+        user.reset_token = None
+        user.reset_token_expiry = None
+        db.commit()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token",
+        )
+
+    # Prevent resetting to the current password.
+    if verify_password(
+        request.new_password,
+        user.hashed_password,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be different from the old password",
+        )
+
+    user.hashed_password = hash_password(request.new_password)
+
+    # Invalidate the token so it cannot be reused.
+    user.reset_token = None
+    user.reset_token_expiry = None
+
+    db.commit()
+
+    return {"message": "Password reset successfully"}
+
+# Admin-only: delete a user account
+@app.delete("/admin/users/{user_id}")
+def delete_user(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    # Find the selected user
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
+    # Prevent the admin from deleting their own account
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot delete your own account here",
+        )
+
+    db.delete(user)
+    db.commit()
+
+    return {"message": "User deleted successfully"}
+
+# Admin-only: update a user's role
+@app.put("/admin/users/{user_id}/role")
+def update_user_role(
+    user_id: int,
+    role: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
+    if role not in ["user", "admin"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Role must be 'user' or 'admin'",
+        )
+
+    # Prevent changing your own role
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot change your own role",
+        )
+
+    user.role = role
+    db.commit()
 
     return {
-        "question": data["response"]
+        "message": "User role updated successfully",
+        "user_id": user.id,
+        "role": user.role,
     }

@@ -3,13 +3,16 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import ProtectedRoute from "./Components/ProtectedRoute";
-import AIChat from "./pages/AIChat";
 import "./App.css";
+import AdminDashboard from "./pages/AdminDashboard";
+import EditProfile from "./pages/EditProfile";
+import ChangePassword from "./pages/ChangePassword";
 
 function App() {
   return (
     <Routes>
       <Route path="/" element={<Login />} />
+
       <Route path="/login" element={<Login />} />
 
       <Route
@@ -27,13 +30,32 @@ function App() {
       />
 
       <Route
-        path="/ai-chat"
+        path="/admin-dashboard"
         element={
-          <ProtectedRoute>
-            <AIChat />
-          </ProtectedRoute>
+        <ProtectedRoute>
+        <AdminDashboard />
+        </ProtectedRoute>
         }
       />
+
+        <Route
+          path="/edit-profile"
+          element={
+            <ProtectedRoute>
+              <EditProfile />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/change-password"
+          element={
+            <ProtectedRoute>
+              <ChangePassword />
+            </ProtectedRoute>
+          }
+        />
+
     </Routes>
   );
 }

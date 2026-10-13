@@ -1,31 +1,5 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, DateTime
 from app.database import Base
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
-from datetime import datetime
-
-class ChatSession(Base):
-    __tablename__ = "chat_sessions"
-
-    id = Column(
-        Integer,
-        primary_key=True,
-        index=True
-    )
-
-    user_id = Column(
-        Integer,
-        ForeignKey("users.id")
-    )
-
-    title = Column(
-        String(255)
-    )
-
-    created_at = Column(
-        DateTime,
-        default=datetime.utcnow
-    )
-
 class User(Base):
     __tablename__ = "users"
 
@@ -39,35 +13,7 @@ class User(Base):
 
     role = Column(String(50), default="user")
 
-class ChatHistory(Base):
-    __tablename__ = "chat_history"
+    # Fields for password reset
+    reset_token = Column(String(255), nullable=True)
 
-    id = Column(
-        Integer,
-        primary_key=True,
-        index=True
-    )
-
-    user_id = Column(
-        Integer,
-        ForeignKey("users.id")
-    )
-
-    session_id = Column(
-    Integer,
-    ForeignKey("chat_sessions.id")
-    )
-
-    question = Column(
-        String(1000)
-    )
-
-    answer = Column(
-        String(5000)
-    )
-
-    created_at = Column(
-        DateTime,
-        default=datetime.utcnow
-    )
-    
+    reset_token_expiry = Column(DateTime(timezone=True), nullable=True)
