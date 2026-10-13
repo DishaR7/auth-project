@@ -37,9 +37,14 @@ from app.auth import (
 app = FastAPI(title="Authentication API")
 
 # Allow requests from the React frontend
+# Allow requests from local and deployed React frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://auth-project-disha-91b5.vercel.app",
+        "https://auth-project-five-flame.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
